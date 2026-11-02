@@ -21,17 +21,17 @@ from phase1_digital_twin import config
 # ===============================================================
 
 def build_frequency_grid():
-    k = tf.range(config.NUM_SUBCARRIERS, dtype=tf.float32)
-    k -= config.NUM_SUBCARRIERS / 2.0
-    frequencies = config.CARRIER_FREQ + k * config.SUBCARRIER_SPACING
-    return tf.cast(frequencies, tf.float32)
+    # Paths.cir already includes the carrier phase; CFR takes baseband offsets.
+    return (np.arange(config.NUM_SUBCARRIERS, dtype=np.float64)
+            - config.NUM_SUBCARRIERS / 2) * config.SUBCARRIER_SPACING
+
 
 def cir_statistics(a, tau):
     a_np = a.numpy() if hasattr(a, "numpy") else np.asarray(a)
     tau_np = tau.numpy() if hasattr(tau, "numpy") else np.asarray(tau)
     
     power = np.abs(a_np) ** 2
-    valid_paths = int(np.count_nonzero(power))
+    valid_paths = int(np.count_nonzero((tau_np >= 0) & (np.mean(power, axis=(2, 3)) > 0)))
     
     # Loại bỏ các tia bị đệm giá trị -1.0 của Sionna RT
     valid_tau = tau_np[tau_np >= 0]
@@ -42,7 +42,7 @@ def cir_statistics(a, tau):
         max_delay = float(np.max(valid_tau) * 1e9)
         mean_delay = float(np.mean(valid_tau) * 1e9)
         
-    avg_power = float(np.mean(power))
+    avg_power = float(np.mean(power)) if power.size else 0.0
     
     return {
         "valid_paths": valid_paths,
@@ -87,17 +87,19 @@ def extract_csi(scene, run_mode="debug", verbose=True):
     num_rx = len(scene.receivers)
     num_tx = len(scene.transmitters)
 
-    # Trích xuất số tia đa đường thực tế từ chiều cuối cùng của ma trận trễ
     num_paths = tau_np.shape[-1]
-
-    # 2. CHUẨN HÓA KÍCH THƯỚC CIR GAIN
-    # Phục hồi không gian mảng ăng-ten cho tín hiệu phức
-    a_np = np.reshape(a_np, (num_rx, num_tx, rx_ant, tx_ant, num_paths))
-
-    # 3. CHUẨN HÓA KÍCH THƯỚC DELAY
-    # Trễ mảng không phụ thuộc vào từng phần tử anten (chỉ phụ thuộc TX/RX)
-    tau_np = np.reshape(tau_np, (num_rx, num_tx, num_paths))
-
+    if num_paths == 0:
+        raise ValueError("Ray tracing found no valid paths. Check node placement "
+                         "against scene geometry and reflection settings; no CSI was exported.")
+    expected_cir = (num_rx, rx_ant, num_tx, tx_ant, num_paths, 1)
+    if a_np.shape != expected_cir or tau_np.shape != (num_rx, num_tx, num_paths):
+        raise ValueError(f"Unexpected synthetic-array CIR shapes: {a_np.shape}, {tau_np.shape}")
+    # Sionna: [rx, rx_ant, tx, tx_ant, path, time]. Preserve antenna order.
+    a_np = a_np[..., 0].transpose(0, 2, 1, 3, 4)
+    valid = (tau_np >= 0) & (np.mean(np.abs(a_np)**2, axis=(2, 3)) > 0)
+    for idx, name in enumerate(scene.receivers):
+        if not valid[idx].any():
+            raise ValueError(f"No valid paths to {name}; no CSI was exported. Check node placement.")
     a = tf.convert_to_tensor(a_np, dtype=tf.complex64)
     tau = tf.convert_to_tensor(tau_np, dtype=tf.float32)
 
@@ -109,28 +111,17 @@ def extract_csi(scene, run_mode="debug", verbose=True):
         print(f"Mean Delay           : {stats['mean_delay_ns']:.2f} ns")
     # 4. TRÍCH XUẤT CFR
     frequencies = build_frequency_grid()
-    H = paths.cfr(frequencies=frequencies, normalize=False, out_type="tf")
-    H_np = H.numpy()
-    
-    if H_np.shape[0] == 1: 
-        H_np = H_np[0]
-
-    receiver_names = list(scene.receivers.keys())
-    idx_bob = receiver_names.index("Bob")
-    idx_eve = receiver_names.index("Eve")
-
-    expected_shape = (rx_ant, tx_ant, config.NUM_SUBCARRIERS)
-    
-    def format_csi_shape(H_raw):
-        H_sq = np.squeeze(H_raw)
-        if H_sq.shape == (tx_ant, config.NUM_SUBCARRIERS):
-            H_sq = np.tile(H_sq[np.newaxis, :, :], (rx_ant, 1, 1))
-        if H_sq.size == np.prod(expected_shape):
-            return np.reshape(H_sq, expected_shape)
-        return H_sq
-
-    H_Bob = format_csi_shape(H_np[idx_bob])
-    H_Eve = format_csi_shape(H_np[idx_eve])
+    H = paths.cfr(frequencies=frequencies, normalize=False,
+                  normalize_delays=False, out_type="numpy")
+    expected_cfr = (num_rx, rx_ant, num_tx, tx_ant, 1, config.NUM_SUBCARRIERS)
+    if H.shape != expected_cfr or num_tx != 1:
+        raise ValueError(f"Unexpected CFR shape {H.shape}; expected {expected_cfr} with one BS")
+    receiver_names = list(scene.receivers)
+    H_Bob = H[receiver_names.index("Bob"), :, 0, :, 0, :]
+    H_Eve = H[receiver_names.index("Eve"), :, 0, :, 0, :]
+    for name, channel in [("Bob", H_Bob), ("Eve", H_Eve)]:
+        if not np.isfinite(channel).all() or not np.any(np.abs(channel) > 0):
+            raise ValueError(f"Invalid or zero CSI for {name}; no dataset exported")
 
     metrics = {"runtime_sec": runtime, **stats}
     return H_Bob, H_Eve, a, tau, paths, metrics

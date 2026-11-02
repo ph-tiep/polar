@@ -37,14 +37,11 @@ __all__ = [
 
 
 class ChannelBoundKeyGenerator:
-    """Cryptographic Key Stream Generator bound to 140 GHz Digital Twin CSI
-    and a Master Secret Key using NIST FIPS 202 SHAKE-256 Sponge CSPRNG.
+    """SHAKE-256 simulation keystream, bound to a CSI digest and frame nonce.
 
-    Extracts physical-layer Reciprocal CSI features (dominant singular value
-    profile from H_Bob) mixed with a shared secret key and frame nonce to
-    produce statistically independent binary key streams for:
-      - Key A (k_A): Information bit masking [batch_size, k]
-      - Key B (k_F): Dynamic frozen-bit coset assignment [batch_size, n - k]
+    CSI digest hashes the first 1024 quantized channel magnitudes, not singular
+    values or a measured reciprocal entropy source. The default key is a public
+    simulation fixture. A digest/BER plot does not establish key secrecy.
     """
 
     def __init__(
@@ -59,7 +56,7 @@ class ChannelBoundKeyGenerator:
 
     @staticmethod
     def _extract_csi_entropy(csi_tensor: Optional[np.ndarray]) -> bytes:
-        """Hash quantized singular value profile of the 140 GHz MIMO channel."""
+        """Hash sampled quantized CSI magnitudes; no entropy claim."""
         if csi_tensor is None:
             return hashlib.sha3_256(b"DEFAULT_SYNTHETIC_CSI_SEED").digest()
         arr = np.asarray(csi_tensor)
@@ -268,25 +265,12 @@ class CryptoPolarEncoder(PolarEncoder):
 
 
 class ImprovedCryptoPolarSCLDecoder(Block):
-    """Improved CSI-Calibrated & Critical-Set Bit-Flip Retry CA-SCL Decoder
-    for Dynamic Frozen-Bit Crypto-Polar Codes in 140 GHz UM-MIMO Channels.
+    """Experimental CA-SCL variant; the historical class name is retained.
 
-    Key Algorithmic Enhancements over Standard Polar Decoders:
-      1. **Fast-SCL Coset Isomorphism**: Strips the dynamic frozen coset
-         ``c_coset = key_frozen * G_F`` via LLR sign modulation in O(N log N)
-         prior to tree traversal, preserving all Rate-0 (R0), Repetition (REP),
-         and Rate-1 (R1) Fast-SCL vectorized instructions.
-      2. **Subcarrier CSI-Reliability Calibration & Adaptive LLR Damping**:
-         Calibrates channel LLRs using post-equalization MIMO-OFDM subcarrier
-         SNRs and applies non-linear LLR damping ``alpha_scale`` to mitigate
-         check-node boxplus overestimation in 140 GHz multipath fading.
-      3. **Cryptographic CRC-Aided Verification & Critical-Set Flip Retry (CS-SCLF)**:
-         Because Key-A masks the CRC-encoded vector ``u_info``, the CRC check
-         inside the SCL candidate list must be evaluated *after* candidate-wise
-         Key-A unmasking! Furthermore, if all ``L`` surviving paths fail the
-         cryptographic CRC check, the decoder automatically locates the ``max_flips``
-         least reliable information bit positions and performs targeted bit-flip
-         list retries (SCL-Flip), yielding significant coding gain.
+    Optional LLR scaling, expanded-list retry, and flips of least-reliable
+    CHANNEL LLR positions are heuristics, not a proven new decoder or an
+    information-bit critical-set algorithm. CRC is checked after key unmasking.
+    last_stats reports actual frame-level decoder work for the latest call.
     """
 
     def __init__(
@@ -299,6 +283,8 @@ class ImprovedCryptoPolarSCLDecoder(Block):
         enable_frozen_crypto: bool = True,
         llr_damping: float = 0.88,
         max_flip_trials: int = 4,
+        expand_list: bool = True,
+        retry_damping: float = 0.78,
         *,
         precision: Optional[str] = None,
         device: Optional[str] = None,
@@ -314,6 +300,10 @@ class ImprovedCryptoPolarSCLDecoder(Block):
         self._enable_frozen_crypto = enable_frozen_crypto
         self._llr_damping = float(llr_damping)
         self._max_flip_trials = int(max_flip_trials)
+        self._retry_damping = float(retry_damping)
+        self.last_stats = {}
+        if not 0 < llr_damping or not 0 < retry_damping or max_flip_trials < 0:
+            raise ValueError("Damping must be positive; retry count must be nonnegative.")
 
         # Underlying Fast-SCL engine (without internal unmasked CRC so we can
         # perform cryptographic Key-A unmasking BEFORE CRC verification!)
@@ -325,7 +315,7 @@ class ImprovedCryptoPolarSCLDecoder(Block):
             precision=precision,
             device=device,
         )
-        # Secondary high-diversity SCL core (2L) for Critical-Set retry on CRC failure
+        # Optional expanded list (up to 2L, capped at 32) on CRC failure
         self._scl_retry_core = (
             PolarSCLDecoder(
                 frozen_pos=self._frozen_pos,
@@ -335,7 +325,7 @@ class ImprovedCryptoPolarSCLDecoder(Block):
                 precision=precision,
                 device=device,
             )
-            if self._max_flip_trials > 0
+            if expand_list
             else None
         )
 
@@ -396,8 +386,9 @@ class ImprovedCryptoPolarSCLDecoder(Block):
         if self._use_crc:
             u_payload_list, crc_valid = self._crc_decoder(u_unmasked_list)
             crc_valid_sq = crc_valid.squeeze(-1).bool()  # [B, 2L]
-            pm_penalty = (1.0 - crc_valid_sq.float()) * self._scl_core.llr_max * self._k
-            total_pm = pm_list + pm_penalty
+            # A valid candidate must always beat any invalid candidate.
+            has_valid = crc_valid_sq.any(dim=-1, keepdim=True)
+            total_pm = pm_list.masked_fill(has_valid & ~crc_valid_sq, float("inf"))
             best_idx = torch.argmin(total_pm, dim=-1)
             batch_idx = torch.arange(B, device=bits_list.device)
             best_payload = u_payload_list[batch_idx, best_idx, :]
@@ -422,7 +413,9 @@ class ImprovedCryptoPolarSCLDecoder(Block):
         B = int(np.prod(input_shape[:-1])) if len(input_shape) > 1 else 1
         logits = llr_ch.reshape(B, self._n)
 
-        # 1. Subcarrier CSI-Reliability Calibration & Damping
+        self.last_stats = dict(base_frames=B, expanded_frames=0, flip_frames=0,
+                               core_calls=1, max_list_size=self._list_size)
+        # 1. Optional heuristic scaling (not supplied by the fair runner).
         if csi_weights is not None:
             w = csi_weights.reshape(-1, self._n).to(logits.dtype)
             if w.shape[0] == 1 and B > 1:
@@ -467,8 +460,8 @@ class ImprovedCryptoPolarSCLDecoder(Block):
             bits_list, pm_list, key_a
         )
 
-        # 5. Critical-Set Bit-Flip & Multi-Scale List Refinement (CS-SCLF) for failed CRC blocks
-        if self._use_crc and self._max_flip_trials > 0 and not torch.all(crc_ok):
+        # 5. Expanded-list and channel-LLR flip retries for failed CRC blocks
+        if self._use_crc and (self._scl_retry_core is not None or self._max_flip_trials > 0) and not torch.all(crc_ok):
             failed_mask = ~crc_ok
             failed_indices = torch.nonzero(failed_mask, as_tuple=False).squeeze(-1)
             llr_failed = llr_coset[failed_indices]  # [B_fail, n]
@@ -476,7 +469,10 @@ class ImprovedCryptoPolarSCLDecoder(Block):
 
             # Stage 5a: Expanded List (2L) with damped LLR pass on failed blocks
             if self._scl_retry_core is not None:
-                bits_2l, pm_2l = self._scl_retry_core._decode(llr_failed * 0.78)
+                self.last_stats["expanded_frames"] += len(failed_indices)
+                self.last_stats["core_calls"] += 1
+                self.last_stats["max_list_size"] = min(self._list_size * 2, 32)
+                bits_2l, pm_2l = self._scl_retry_core._decode(llr_failed * self._retry_damping)
                 payload_2l, crc_2l = self._select_best_path_with_crypto_crc(
                     bits_2l, pm_2l, key_a_failed
                 )
@@ -485,7 +481,7 @@ class ImprovedCryptoPolarSCLDecoder(Block):
                     best_payload[rec_global] = payload_2l[crc_2l]
                     crc_ok[rec_global] = True
 
-            # Stage 5b: Critical-Set Channel Bit-Flip Retry on remaining failed blocks
+            # Stage 5b: Channel-LLR flip retry on remaining failed blocks
             _, least_rel_pos = torch.topk(
                 -llr_failed.abs(), k=min(self._max_flip_trials, self._n), dim=-1
             )
@@ -506,6 +502,8 @@ class ImprovedCryptoPolarSCLDecoder(Block):
                 ) * 12.0
 
                 core_to_use = self._scl_retry_core if self._scl_retry_core is not None else self._scl_core
+                self.last_stats["flip_frames"] += len(active_global_idx)
+                self.last_stats["core_calls"] += 1
                 bits_retry, pm_retry = core_to_use._decode(llr_retry)
                 key_a_sub = key_a[active_global_idx] if key_a is not None else None
                 payload_retry, crc_retry = self._select_best_path_with_crypto_crc(
@@ -565,6 +563,7 @@ class CryptoPolarDecoder(Block):
                 enable_frozen_crypto=enable_frozen_crypto,
                 llr_damping=damping,
                 max_flip_trials=flips,
+                expand_list=("IMPROVED" in self._dec_type),
                 precision=precision,
                 device=device,
             )

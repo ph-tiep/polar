@@ -24,10 +24,11 @@ The exported MAT file is fully compatible with MATLAB R2022b+.
 
 import os
 import platform
+import re
 import numpy as np
 import scipy.io as sio
 import tensorflow as tf
-import sionna
+import sionna.rt as rt
 
 from phase1_digital_twin import config
 
@@ -165,7 +166,8 @@ def export_dataset(H_Bob,
 
         # Software
         "TensorFlow": tf.__version__,
-        "Sionna": sionna.__version__,
+        "SionnaRT": rt.__version__,
+        "CFRFrequencyConvention": "baseband offsets; carrier phase included in CIR",
         "Python": platform.python_version(),
         "Platform": platform.platform(),
     }
@@ -195,7 +197,7 @@ def export_dataset(H_Bob,
     if validation_metrics is not None:
 
         for k,v in validation_metrics.items():
-            matlab_validation[k.replace(" ","_")] = np.asarray(v)
+            matlab_validation[re.sub(r"[^A-Za-z0-9_]", "_", k)] = np.asarray(v)
 
     # ----------------------------------------------------------
     # MAT FILE
@@ -223,6 +225,7 @@ def export_dataset(H_Bob,
                      "CSI_Dataset_140GHz.mat"),
         mat_dict,
         do_compression=True,
+        long_field_names=True,
     )
 
     # ----------------------------------------------------------

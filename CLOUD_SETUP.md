@@ -1,51 +1,55 @@
-# Thiết lập cloud và kết quả chạy
+# Cloud Phase 1: chạy và đánh giá
 
-Repo được dùng trực tiếp tại `/workspace/polar`; không cần tạo Git worktree.
-Các đường dẫn trong script dành cho môi trường cloud này, không phải Git Bash trên Windows.
+Checkout dùng trực tiếp tại `/workspace/polar`, không cần Git worktree. Runtime là Python 3.12.
 
-## Các file đã bổ sung
-
-- `munich/munich.xml`: XML người dùng cung cấp, giống bản trong `phase1_digital_twin/`.
-- `munich/meshes/`: 2.367 file PLY giải nén từ `meshes.rar`, khớp đầy đủ tham chiếu của XML.
-- `scripts/cloud/install.sh`: cài dependency và kiểm tra môi trường.
-- `scripts/cloud/run-phase1.py`: launcher khởi tạo Sionna RT trước TensorFlow, cung cấp metadata phiên bản RT và đặt thư mục kết quả ngoài repo.
-
-## Cài đặt và chạy
+## Cài đặt
 
 ```bash
 cd /workspace/polar
 bash scripts/cloud/install.sh
-export MPLCONFIGDIR=/workspace/.polar-setup/matplotlib
-export XDG_CACHE_HOME=/workspace/.polar-setup/cache
+export MPLCONFIGDIR=/workspace/.polar-setup/matplotlib XDG_CACHE_HOME=/workspace/.polar-setup/cache
 export MPLBACKEND=Agg OMP_NUM_THREADS=2 MKL_NUM_THREADS=2
 export TF_NUM_INTRAOP_THREADS=2 TF_NUM_INTEROP_THREADS=2
-/workspace/.polar-phase1-venv/bin/python scripts/cloud/run-phase1.py
 ```
 
-Python 3.12 được dùng với hai virtualenv riêng:
+Hai virtualenv: `.polar-venv` cho PyTorch 2.12.1 CPU/Phase 2, `.polar-phase1-venv` cho TensorFlow 2.21.0 và Sionna RT 2.0.1. Dr.Jit cần cache `/home/agent/.drjit` có thể ghi.
 
-- Crypto-Polar/Phase 2: PyTorch 2.12.1 CPU, NumPy 2.3.5, SciPy 1.17.0, Matplotlib 3.10.8.
-- Phase 1: TensorFlow 2.21.0 và Sionna RT 2.0.1.
+## Chạy bản đánh giá riêng
 
-Dr.Jit cần thư mục cache `/home/agent/.drjit` có thể ghi. Nếu sandbox chặn cache này, chạy qua quyền thực thi cloud phù hợp; không tắt kiểm tra TLS hay checksum. Không chạy trực tiếp `main_phase1.py` trong runtime này vì thứ tự nạp thư viện native có thể gây crash.
+```bash
+/workspace/.polar-phase1-venv/bin/python scripts/cloud/run-phase1.py --layout outdoor-review --mode full
+```
 
-Kết quả Phase 1 được đặt tại `/workspace/polar-results/phase1/`, tránh ghi đè CIR và hình đã có trong Git.
+Launcher tạo thư mục mới dưới `results/` trong repository, ghi `RUN_CONFIG.json` và từ chối ghi đè một thư mục đã tồn tại. Có thể chỉ định `--output-dir /workspace/polar-results/my-new-run`.
 
-## Kết quả đã xác minh
+**outdoor-review thay vị trí BS từ [0,0,25] thành [20,20,25] m**, giữ nguyên Bob=[45,10,1.5] và Eve=[42,12,1.5]. Tọa độ BS cũ nằm dưới mái z=26 m. Đây là kịch bản đánh giá mới, không phải bản tái lập hình học gốc.
 
-- Bộ kiểm thử `fec/polar/test_crypto.py` đạt với cả 5 bộ giải mã; Bob BER bằng 0 trong kiểm thử không nhiễu.
-- Import Phase 1 và Phase 2 thành công.
-- Nạp cảnh Munich, ánh xạ vật liệu, bố trí anten và ray tracing CPU chạy được.
-- Phase 1 ở cả debug (200.000 mẫu) và full (1.000.000 mẫu) trả về 0 multipath hợp lệ. Sau đó thất bại tại `phase1_digital_twin/validation_metrics.py`, hàm `los_ratio()`, do truy cập `power[0]` khi mảng rỗng.
-- Kiểm tra hình học: đường LOS từ BS đến Bob và Eve bị che; giao điểm đầu tiên cách BS lần lượt khoảng 1,217 m và 1,086 m. Điều này chưa giải thích đầy đủ việc không có tia phản xạ.
-- Chưa xuất dataset CSI mới; Phase 2 đầy đủ chưa chạy vì thiếu CSI hợp lệ `H_Bob.npy` và `H_Eve.npy`.
+`--layout original` giữ nguyên hình học gốc; kiểm thử thực tế vẫn không có tia và giờ báo ValueError rõ ràng trước khi xuất dữ liệu. Không tạo CSI giả.
 
-Cần kiểm tra vị trí node/cấu hình đường truyền và xử lý trường hợp không có tia trong một thay đổi mã nguồn riêng. Không thay cảnh hoặc tạo CSI giả để bỏ qua lỗi.
+Đầu ra nằm trong từng thư mục lần chạy: `dataset/140GHz/`, `figures/`, `logs/`, `RUN_CONFIG.json`. Không ghi đè CIR hay các hình Phase 2 đã có trong Git.
 
-## Log trong phiên cloud đã chạy
+Để xác minh và tạo thêm hình đối chiếu:
 
-- `/workspace/.polar-setup/phase1-meshes-run.log`
-- `/workspace/.polar-setup/phase1-full-run.log`
-- `/workspace/.polar-setup/scene-diagnosis.log`
+```bash
+/workspace/.polar-venv/bin/python scripts/cloud/review-phase1.py /workspace/polar-results/TEN-THU-MUC-LAN-CHAY
+```
 
-Log và các virtualenv nằm ngoài repo. Cấu hình cloud đã được lưu ở dạng nháp; thao tác Git không publish môi trường cloud.
+## Kết quả cloud đã xác minh
+
+Bản full thành công: `/workspace/polar-results/phase1-outdoor-review-003`. Một triệu mẫu/nguồn, seed 2026, 140 GHz, 2 GHz, 512 subcarrier, BS 16×16, UE 4×4, reflection bật và max depth=3. Có 23 đường tới Bob và 24 đường tới Eve. CSI `(16,256,512)` hữu hạn và khác 0. MATLAB khớp NumPy; tổng Fourier trực tiếp từ CIR khớp CSI (sai số tương đối cực đại <0,02% trên cặp anten kiểm tra).
+
+PDP và thống kê loại padding delay=-1. CFR dùng offset baseband vì CIR đã chứa pha sóng mang, giữ nguyên các trục anten và không nhân bản anten. Tỷ lệ công suất tia tới sớm nhất không được coi là nhãn LOS. Sửa khởi tạo thư viện native, phiên bản RT và tên trường MATLAB dài.
+
+Bốn kiểm thử hồi quy đạt:
+
+```bash
+/workspace/.polar-phase1-venv/bin/python -m unittest discover -s tests -p test_phase1.py -v
+```
+
+Bộ Crypto-Polar 5 decoder đạt từ trước. Phase 2 chưa được chạy với dataset mới; cần đánh giá hình học và kết quả Phase 1 trước. Công suất kênh trong báo cáo là dB của gain, không phải dBm hoặc phép đo thực nghiệm.
+
+Cấu hình cloud được lưu dưới dạng nháp; Git và việc lưu cấu hình không tự publish môi trường.
+
+## Chạy bản sửa theo góp ý
+
+Xem [RUN_VSCODE.md](RUN_VSCODE.md) và [ADVISOR_CHANGES.md](ADVISOR_CHANGES.md). Các kết quả cloud nêu trên là lịch sử Phase 1; không phải kết quả của thí nghiệm Phase 2 mới.

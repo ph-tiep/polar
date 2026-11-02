@@ -187,8 +187,8 @@ def setup_transceivers(scene, verbose=True):
     scene.rx_array = rx_array
 
     if verbose:
-        print("      -> BS Array  : 16×16 (256 elements)")
-        print("      -> UE Arrays : 4×4 (16 elements)")
+        print(f"      -> BS Array  : {config.TX_NUM_ROWS}×{config.TX_NUM_COLS} ({config.TX_NUM_ANT} elements)")
+        print(f"      -> UE Arrays : {config.RX_NUM_ROWS}×{config.RX_NUM_COLS} ({config.RX_NUM_ANT} elements)")
 
     # ----------------------------------------------------------
     # Deploy Base Station

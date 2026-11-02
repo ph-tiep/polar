@@ -84,8 +84,11 @@ def power_delay_profile(a, tau, rx_index=0, tx_index=0):
     # Average over antennas
     power = np.mean(np.abs(gains) ** 2, axis=(0,1))
 
-    delays_ns = delays * 1e9
-    powers_db = 10*np.log10(power + 1e-30)
+    valid = (delays >= 0) & np.isfinite(delays) & np.isfinite(power) & (power > 0)
+    if not np.any(valid):
+        raise ValueError("No valid nonzero paths for the selected receiver/transmitter.")
+    delays_ns = delays[valid] * 1e9
+    powers_db = 10*np.log10(power[valid])
 
     return delays_ns, powers_db
 
@@ -118,11 +121,10 @@ def delay_statistics(a, tau, rx_index=0, tx_index=0):
 # LOS RATIO
 # ===============================================================
 
-def los_ratio(a, rx_index=0, tx_index=0):
+def los_ratio(a, rx_index=0, tx_index=0, tau=None):
     """
-    Approximate LOS power ratio.
-
-    First path is assumed LOS.
+    Earliest-path power fraction when delays are supplied.
+    This does not classify whether the path is geometrically LOS.
     """
 
     a_np = a.numpy() if hasattr(a, "numpy") else np.asarray(a)
@@ -131,7 +133,14 @@ def los_ratio(a, rx_index=0, tx_index=0):
 
     power = np.mean(np.abs(gains)**2, axis=(0,1))
 
-    los_power = power[0]
+    if power.size == 0 or not np.any(power > 0):
+        raise ValueError("Cannot compute first-path power ratio without valid paths.")
+    if tau is not None:
+        delays, powers_db = power_delay_profile(a, tau, rx_index, tx_index)
+        power = 10 ** (powers_db / 10)
+        los_power = power[np.argmin(delays)]
+    else:
+        los_power = power[0]
     total_power = np.sum(power)
 
     return los_power / (total_power + 1e-30)
@@ -159,11 +168,16 @@ def evaluate_channel(H_Bob, H_Eve, a, tau, verbose=True):
     metrics["Mean Delay (ns)"] = mean_delay
     metrics["RMS Delay Spread (ns)"] = rms_delay
 
-    metrics["LOS Ratio"] = los_ratio(a)
+    metrics["First Arrival Power Ratio (not LOS flag)"] = los_ratio(a, tau=tau)
 
     delays_ns, powers_db = power_delay_profile(a, tau)
 
     metrics["Number of Paths"] = len(delays_ns)
+    eve_delays, _ = power_delay_profile(a, tau, rx_index=1)
+    metrics["Eve Number of Paths"] = len(eve_delays)
+    eve_mean, eve_rms = delay_statistics(a, tau, rx_index=1)
+    metrics["Eve Mean Delay (ns)"] = eve_mean
+    metrics["Eve RMS Delay Spread (ns)"] = eve_rms
 
     if verbose:
 

@@ -25,8 +25,10 @@ Pipeline
 
 import time
 import traceback
+import json
+from pathlib import Path
+import sionna.rt as rt
 import tensorflow as tf
-import sionna
 
 from phase1_digital_twin import config
 
@@ -100,7 +102,15 @@ def print_configuration():
 # MAIN PIPELINE
 # ===============================================================
 
-def main(run_mode="debug"):
+def main(run_mode="debug", output_dir=None):
+
+    if output_dir is not None:
+        root = Path(output_dir).resolve()
+        for key, leaf in [("DATASET_DIR", "dataset/140GHz"),
+                          ("FIGURE_DIR", "figures"), ("LOG_DIR", "logs")]:
+            folder = root / leaf
+            folder.mkdir(parents=True, exist_ok=True)
+            setattr(config, key, str(folder))
 
     pipeline_start = time.time()
 
@@ -109,7 +119,7 @@ def main(run_mode="debug"):
     print("=" * 70)
 
     print(f"TensorFlow Version : {tf.__version__}")
-    print(f"Sionna Version     : {sionna.__version__}")
+    print(f"Sionna RT Version  : {rt.__version__}")
     print()
 
     print_configuration()
@@ -197,7 +207,7 @@ def main(run_mode="debug"):
         save_validation_figures(
             a,
             tau,
-            output_dir=config.DATASET_DIR,
+            output_dir=config.FIGURE_DIR,
         )
 
         timing["Figures"] = time.time() - t0
@@ -220,6 +230,9 @@ def main(run_mode="debug"):
             validation_metrics=validation,
             verbose=True,
         )
+        with open(Path(config.LOG_DIR) / "validation.json", "w") as report:
+            json.dump({k: float(v) for k, v in validation.items()}, report,
+                      indent=2, allow_nan=False)
 
         timing["Export Dataset"] = time.time() - t0
 
@@ -265,7 +278,7 @@ Delay_CDF.pdf
 
         print("=" * 70)
         print("PHASE 1 COMPLETED SUCCESSFULLY")
-        print("READY FOR PHASE 2 (MATLAB MASSIVE MIMO + PLS)")
+        print("CSI EXPORTED; REVIEW THE SCENARIO AND VALIDATION BEFORE PHASE 2")
         print("=" * 70)
 
     except Exception:
@@ -289,4 +302,9 @@ if __name__ == "__main__":
     # debug  -> nhanh (~2e5 rays)
     # full   -> dataset bài báo (1e6 rays)
 
-    main(run_mode="debug")
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=["debug", "full"], default="debug")
+    parser.add_argument("--output-dir", default="phase1_results/" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()))
+    args = parser.parse_args()
+    main(run_mode=args.mode, output_dir=args.output_dir)

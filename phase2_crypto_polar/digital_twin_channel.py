@@ -1,14 +1,8 @@
-"""
-digital_twin_channel.py
-======================================================================
-140 GHz UM-MIMO Digital Twin Channel Processor & OFDM Soft-Demapper.
+"""Ray-traced CSI beamforming and coherent frequency-domain BPSK logits.
 
-Loads the ray-traced 140 GHz CSI dataset (H_Bob.npy, H_Eve.npy) from
-Phase 1 (256 BS antennas x 16 UE antennas x 512 subcarriers), applies
-SVD / Dominant Eigen-Beamforming at the BS matched to Bob, and provides
-realistic frequency-selective fading and CSI-calibrated LLR generation
-for both Bob and Eve.
-======================================================================
+Loads [Rx, Tx, subcarrier] CSI at the dimensions supplied by Phase 1. Applies
+Bob SVD beamforming and Eve MRC on Bob's transmitted beam. Does not synthesize
+extra multipath or implement time-domain OFDM/CP.
 """
 
 import os
@@ -41,6 +35,13 @@ class DigitalTwinTHzChannel:
         self.cir_gain = np.load(cir_gain_path) if os.path.exists(cir_gain_path) else None
         self.cir_delay = np.load(cir_delay_path) if os.path.exists(cir_delay_path) else None
 
+        for name, arr in (("Bob", self.H_Bob), ("Eve", self.H_Eve)):
+            if arr.ndim != 3 or min(arr.shape) < 1 or not np.isfinite(arr).all():
+                raise ValueError(f"Invalid {name} CSI: expected finite [Rx, Tx, subcarrier]")
+            if not np.iscomplexobj(arr) or not np.all(np.sum(abs(arr)**2, axis=(0, 1)) > 0):
+                raise ValueError(f"{name} CSI must be complex and nonzero on every carrier")
+        if self.H_Bob.shape != self.H_Eve.shape:
+            raise ValueError("Bob/Eve CSI dimensions must match for this experiment")
         self.n_rx, self.n_tx, self.n_sc = self.H_Bob.shape
         self._compute_beamforming_and_effective_channels()
 
@@ -62,7 +63,7 @@ class DigitalTwinTHzChannel:
             raw_power_eve[m] = np.mean(np.abs(He) ** 2)
 
             # Dominant right singular vector of H_Bob (BS transmit beamformer)
-            # Using Hermitian Gram matrix Hb @ Hb^H (16 x 16) for fast exact SVD
+            # Economy SVD on the actual rectangular CSI matrix
             u_b, s_b, vh_b = np.linalg.svd(Hb, full_matrices=False)
             w_tx = vh_b[0, :].conj()  # (256,) unit-norm transmit beamformer
             w_rx_bob = u_b[:, 0]      # (16,) unit-norm receive combiner at Bob
@@ -100,32 +101,6 @@ class DigitalTwinTHzChannel:
         self.raw_power_eve_db = 10.0 * np.log10(raw_power_eve + 1e-30)
         self.spatial_corr = spatial_corr.astype(np.float32)
 
-        # Synthesize realistic 140 GHz frequency-selective multipath ripple around
-        # the ray-traced mean power using the CIR delay spread (2 GHz BW)
-        freqs_rel = np.linspace(-1.0, 1.0, self.n_sc)
-        if self.cir_delay is not None:
-            valid_delays = self.cir_delay[self.cir_delay > 0]
-            rms_tau_ns = float(np.std(valid_delays) * 1e9) if valid_delays.size > 1 else 4.5
-        else:
-            rms_tau_ns = 4.5
-        multipath_ripple_bob = (
-            1.0
-            + 0.32 * np.cos(2.0 * np.pi * rms_tau_ns * freqs_rel)
-            + 0.18 * np.sin(5.0 * np.pi * rms_tau_ns * freqs_rel + 0.7)
-        )
-        multipath_ripple_eve = (
-            1.0
-            + 0.25 * np.cos(1.7 * np.pi * rms_tau_ns * freqs_rel + 0.4)
-            + 0.14 * np.sin(4.3 * np.pi * rms_tau_ns * freqs_rel - 0.3)
-        )
-        self.g_bob_norm = (self.g_bob_norm * multipath_ripple_bob).astype(np.float32)
-        self.g_bob_norm /= float(np.mean(self.g_bob_norm))
-        self.g_eve_fading_only = (self.g_eve_fading_only * multipath_ripple_eve).astype(np.float32)
-        self.g_eve_fading_only /= float(np.mean(self.g_eve_fading_only))
-
-        self.g_bob_db = 10.0 * np.log10(mean_g_bob * self.g_bob_norm + 1e-30)
-        self.g_eve_db = 10.0 * np.log10(mean_g_eve * self.g_eve_fading_only + 1e-30)
-
         self.bf_gain_advantage_db = float(
             10.0 * np.log10(mean_g_bob / mean_g_eve)
         )
@@ -146,70 +121,24 @@ class DigitalTwinTHzChannel:
             "bob_gain_std_db": float(np.std(self.g_bob_db)),
         }
 
-    def transmit_qpsk_ofdm(
-        self,
-        codewords: torch.Tensor,
-        ebno_db: float,
-        coderate: float,
-        node: str = "bob",
-        include_beamforming_loss_for_eve: bool = False,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Map binary codewords [B, N] onto QPSK symbols across the 512
-        Digital Twin OFDM subcarriers, pass through the 140 GHz frequency-selective
-        fading channel + AWGN, and return demapper logits and CSI weights.
+    def transmit_bpsk(self, codewords, ebno_db, payload_rate, *, node="bob",
+                      eve_snr="physical", indices=None, noise=None):
+        """Frequency-domain BPSK abstraction with exact coherent channel logits.
 
-        Convention matching Sionna Polar decoders:
-          - Input bit c in {0, 1}
-          - Logit > 0 indicates bit 1 is more likely; Logit < 0 indicates bit 0
-            (since PolarDecoder converts ``llr = -1.0 * logit``).
+        Eb refers to payload bits (CRC excluded). No time-domain OFDM/CP, extra
+        Rician fading, or synthesized ripple. Pass shared indices/noise to pair
+        schemes. Positive logit means bit 1. Noise is unit normal before scaling.
         """
-        B, N = codewords.shape
-        dev = codewords.device
-        dt = codewords.dtype
-
-        # Select subcarrier power profile from the 140 GHz Digital Twin
-        idx_sc = np.arange(N) % self.n_sc
-        if node.lower() == "bob":
-            g_sc = self.g_bob_norm[idx_sc]
-        else:
-            if include_beamforming_loss_for_eve:
-                g_sc = self.g_eve_norm[idx_sc]
-            else:
-                # Worst-case Eve at identical average SNR as Bob (testing pure
-                # Crypto-Polar security even if Eve intercepts with high SNR!)
-                g_sc = self.g_eve_fading_only[idx_sc]
-
-        g_base = torch.tensor(g_sc, dtype=dt, device=dev).unsqueeze(0)  # [1, N]
-
-        # Include 140 GHz Sub-THz block Rician small-scale fading across OFDM frames
-        # (K-factor = 6 dB -> K_lin = 4.0, capturing THz dominant path + diffuse cluster)
-        k_rician = 4.0
-        los_comp = np.sqrt(k_rician / (k_rician + 1.0))
-        nlos_std = np.sqrt(1.0 / (2.0 * (k_rician + 1.0)))
-        # Coherence block size = 16 subcarriers (correlated across adjacent subcarriers)
-        n_blocks = (N + 15) // 16
-        fading_re = los_comp + torch.randn((B, n_blocks, 1), dtype=dt, device=dev) * nlos_std
-        fading_im = torch.randn((B, n_blocks, 1), dtype=dt, device=dev) * nlos_std
-        fading_pow = (fading_re ** 2 + fading_im ** 2).expand(B, n_blocks, 16).reshape(B, -1)[:, :N]
-
-        g_t = g_base * fading_pow
-        h_mag = torch.sqrt(g_t + 1e-8)
-
-        # Standard coded BPSK/QPSK Eb/N0 calibration:
-        # For unit-energy coded symbols, sigma^2 = 1 / (2 * R * Eb/N0)
-        ebno_lin = 10.0 ** (float(ebno_db) / 10.0)
-        sigma2 = 1.0 / (2.0 * float(coderate) * ebno_lin)
-        sigma = float(np.sqrt(sigma2))
-
-        # Modulate: x_s = 2*c - 1 in {-1, +1} (where -1 -> bit 0, +1 -> bit 1)
-        x_s = 2.0 * codewords - 1.0
-        noise = torch.randn_like(x_s) * sigma
-        y_rx = h_mag * x_s + noise
-
-        # Conventional equalized demapper logit (uses average subcarrier profile)
-        logits = (2.0 * y_rx * torch.sqrt(g_base)) / sigma2
-        # Instantaneous CSI reliability weights for CSI-Calibrated Improved Decoder
-        csi_weights = g_t
-
-        return logits, csi_weights
-
+        if node not in ("bob", "eve") or eve_snr not in ("physical", "equal-average"):
+            raise ValueError("Invalid receiver or Eve normalization")
+        if not 0 < payload_rate <= 1:
+            raise ValueError("Invalid payload rate")
+        if indices is None or noise is None:
+            raise ValueError("Pass explicit carrier indices and unit-normal noise")
+        profile = self.g_bob_norm if node == "bob" else (
+            self.g_eve_norm if eve_snr == "physical" else self.g_eve_fading_only)
+        gain = torch.as_tensor(profile, dtype=codewords.dtype, device=codewords.device)[indices]
+        h = torch.sqrt(gain)
+        sigma2 = 1 / (2 * payload_rate * 10 ** (float(ebno_db) / 10))
+        y = h * (2 * codewords - 1) + noise * np.sqrt(sigma2)
+        return 2 * h * y / sigma2, gain

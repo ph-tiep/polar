@@ -4,3 +4,8 @@ __pycache__/
 logs/
 .env
 .venv/
+
+# Isolated experiments and local Python environments
+results/
+phase1_results/
+.venv*/

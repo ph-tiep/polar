@@ -1,0 +1,5 @@
+numpy==2.3.5
+sionna-rt==2.0.1
+tensorflow==2.21.0
+scipy==1.17.0
+matplotlib==3.10.8
