@@ -8,6 +8,7 @@ Các môi trường Phase 1 và Phase 2 được tách để tránh xung đột 
 ## 1. Lấy mã và tạo môi trường
 
 Nếu đang có file sửa chưa commit, lưu lại trước khi cập nhật. Không dùng reset/force.
+Nếu bạn lấy mã bằng Download ZIP thay vì git clone, tải ZIP mới từ nhánh main; giữ riêng thư mục results và các môi trường Python trước khi thay mã. Lệnh git pull bên dưới áp dụng cho bản clone có .git.
 
 ```powershell
 git pull --ff-only origin main
@@ -61,8 +62,8 @@ Kiểm tra Fourier/MATLAB và vẽ hình CSI trực tiếp, không chạy ray tr
 .\.venv-phase2\Scripts\python.exe main_phase2_crypto_q1.py --dataset-dir results/phase1-tx256-rx16/dataset/140GHz --expected-tx 256 --expected-rx 16 --output-dir results/phase2-review-256x16
 ```
 
-`--plan` chỉ in cấu hình; `--smoke` dùng 2 khung/SNR để kiểm tra nối các bước,
-**không dùng kết quả smoke cho báo cáo**. Lệnh thứ ba mới chạy cấu hình đánh giá.
+`--plan` chỉ in cấu hình; `--smoke` dùng 2 khung tại 0 dB để kiểm tra nối các bước,
+chỉ xuất CSV/JSON và `SMOKE_ONLY.txt`, **không xuất hình hiệu năng**. Không dùng smoke cho báo cáo. Lệnh thứ ba mới chạy cấu hình đánh giá.
 Nếu đã có CSI từ lần chạy sửa trước, có thể chỉ đường dẫn tới bộ CSI đó, nhưng
 phải có `Metadata.npz` phù hợp. Hình cũ hoặc CIR riêng lẻ không thay thế được H.
 
@@ -71,10 +72,10 @@ Cấu hình mặc định `configs/phase2_review.json`:
 - N=256, K=128 **bao gồm CRC11**, payload=117; R_code=0.5, R_payload=117/256.
 - CA-SCL L=4,8,16 cho cả Standard và Crypto. Không có SC/BP trong thí nghiệm mới.
 - Decoder Modified: L ban đầu 8, mở rộng tối đa 16, tối đa 4 lần lật LLR.
+- `decoder_ablation: true`: thêm ba đối chứng chỉ tăng list, chỉ damping, chỉ flip để phân biệt đóng góp.
 - 2.000 khung mỗi điểm Eb/N0 từ -1 đến 6 dB; batch 32, seed 2026, CPU 2 luồng.
 - Eve dùng CA-SCL L=8; có khóa đúng, sai 1%,25%,50%,100% bit của keystream dẫn xuất.
-- Hai phạm vi sai khóa tách riêng: `full` và `frozen`. Trong `frozen`, phần khóa
-  che thông tin được giả định biết đúng. Không gọi đây là tỷ lệ biết master key.
+- Hình 5 chính dùng `full`: K dài N bit gồm cả khóa che thông tin và khóa frozen, theo định nghĩa của bài tham chiếu. Bob dùng K giống Alice; Eve lật 1%,25%,50%,100% bit K. Có thể đặt `mismatch_scopes: ["frozen"]` cho đối chứng phụ, với phần khóa thông tin giả định biết đúng; không dùng đối chứng này thay Hình 5 chính.
 - `eve_snr: physical` giữ chênh lệch gain Bob/Eve. Có thể tạo bản config riêng với
   `equal-average` để kiểm tra cùng SNR trung bình; chạy vào thư mục khác.
 
@@ -111,19 +112,19 @@ Trong từng thư mục Phase 2:
   tạo ở Phase 2; Phase 1 có hình kiểm tra CSI/PDP riêng.
 - `N..._K.../Fig2_Bob_BER.*`, `Fig3_Bob_BLER.*`: mỗi hình con một L, chỉ so Bob.
 - `Decoder_BER/BLER.*`: CA-SCL cơ sở so Modified, tách khỏi so mã hóa.
-- `Fig5_Eve_full_*`, `Fig5_Eve_frozen_*`: các mức sai khóa theo Eb/N0.
+- `Fig5_Eve_full_*`: đúng 5 đường Bob khóa đúng + Eve p=1%,25%,50%,100%. Eve khóa đúng được đưa sang `Eve_Controls_*`. `Fig5_Eve_frozen_*` chỉ xuất khi chọn đối chứng frozen.
 - `Eve_Controls_*`: Standard tại Eve, Crypto khóa đúng, và đối chứng frozen-only
   bằng hard decision + biến đổi Polar ngược. Đây là các luật giải mã khác nhau.
 - `metrics.csv`: BER/BLER, số lỗi/khung/bit, Wilson CI cho BLER, sai số chuẩn BER
   tính theo khung, thời gian, số lượt retry, L tối đa và payload goodput.
+- `frame_errors.npz`: lỗi bit theo từng khung, trục `[SNR, curve, frame]`, cho phân tích ghép cặp.
+- `paired_metrics.csv`: chênh lệch BER/BLER và đếm khung lỗi riêng/chung; chênh lệch = candidate - reference, âm là candidate ít lỗi hơn. Sai số chuẩn bằng 0 không chứng minh tương đương khi chưa quan sát lỗi.
 - `diagnostics.json`, `Key_Perturbation_and_Weight.*`: thay một bit master key
   với cùng plaintext/CSI/frame ID; phổ trọng số dùng cùng payload và CRC.
 - `Decoding_Cost_and_Payload_Goodput.*`: thời gian giải mã trung bình theo batch
   và payload goodput; không phải độ trễ đơn khung hoặc secret capacity.
 
-BER/BLER bằng 0 vẫn ghi 0 trong CSV. Trên trục log, tam giác biểu diễn cận trên
-95% khi không quan sát lỗi; với BER dùng cận bảo thủ BER <= BLER, không giả định
-các bit trong một khung độc lập. Không nối cận này như một BER đo được.
+BER/BLER bằng 0 vẫn ghi 0 trong CSV. Trên hình log, ghi rõ các SNR có 0 lỗi ở chú thích dưới trục; không vẽ cận trên thành điểm BER. `zero_error_observations.csv` lưu số khung/bit và cận trên 95% để tham khảo. Các đường nối các điểm đo khác 0, không làm trơn hoặc ngoại suy phần chưa đo.
 
 `figures/` cũ trong Git là lịch sử, không phải đầu ra bản mới. Không dùng lẫn hai
 bộ hình. NIST đã bỏ khỏi luồng chạy; phần system model chưa được soạn/sửa.
@@ -136,3 +137,41 @@ bộ hình. NIST đã bỏ khỏi luồng chạy; phần system model chưa đư
 ```
 
 Bộ kiểm tra dùng dữ liệu nhỏ có nhãn fixture, không phải kết quả khoa học.
+
+
+## 7. Vẽ lại kết quả đã chạy, không cần chạy lại Phase 1/2
+
+Dùng thư mục **review**, không chọn thư mục **smoke**. Công cụ sẽ từ chối smoke,
+lần chạy chưa hoàn tất, hoặc CSV chỉ có một SNR.
+
+```powershell
+.\.venv-phase2\Scripts\python.exe replot_phase2.py --run-dir results/phase2-review-256x16 --output-dir results/phase2-review-256x16-redraw
+```
+
+Chỉ cần RUN_CONFIG.json, metrics.csv và diagnostics.json từ lần chạy cũ; không
+cần H/CIR để vẽ lại các hình hiệu năng. Không ghi đè file gốc. CSV được chép nguyên
+byte, kèm SHA256 trong REPLOT_INFO.json. Fig1 kênh giữ ở thư mục lần chạy gốc.
+
+## 8. Chạy Hình 5 theo bố cục bài tham chiếu
+
+```powershell
+.\.venv-phase2\Scripts\python.exe main_phase2_crypto_q1.py --config configs/phase2_fig5.json --dataset-dir results/phase1-tx256-rx16/dataset/140GHz --expected-tx 256 --expected-rx 16 --output-dir results/phase2-fig5-256x16
+```
+
+Config này có N=128,K=64 và N=256,K=64; Eb/N0=0,2,...,18 dB; 10.000 khung/SNR;
+Bob/Eve cùng CA-SCL L=8, CRC11; không chạy Modified/ablation trong bộ Fig5 riêng.
+Đây là cấu hình kiểm chứng mới trên CSI Phase 1; bài cũ dùng SC/AWGN và không
+nêu CRC, nên không gọi là tái lập nguyên bản số liệu cũ. K/N là rate gồm CRC;
+payload tương ứng 53 bit trong cả hai trường hợp. Số bit lật làm tròn gần nhất,
+ví dụ 1% của N=128 là 1/128 bit, của N=256 là 3/256 bit; lưu tỷ lệ thực tế trong CSV.
+
+Nội dung khóa K gồm cả information key và frozen key. p=100% là phần bù K, khác
+khóa ngẫu nhiên độc lập. Các đường phải theo kết quả thực, không ép BER Eve về
+0,5 hoặc 1. Ghi nhận hạn chế này khi phân tích báo cáo.
+
+Muốn khảo sát dày vùng chuyển tiếp Bob/decoder, dùng `--config configs/phase2_dense.json`:
+SNR -1 đến 6 dB, bước 0,5 dB và 10.000 khung/SNR. Tổng khung trên mỗi đường tăng
+9,375 lần so review 2.000 khung tại 8 SNR; chọn ngân sách phù hợp máy. Config dày
+là tùy chọn để bạn tự chạy, không phải kết quả đã có. `decoder_ablation: false`
+có thể dùng khi chỉ muốn chạy phép so sánh chính. Không tăng N/K/TxRx chỉ để làm
+đường đẹp; dùng mỗi thay đổi để trả lời một câu hỏi đánh giá rõ ràng.

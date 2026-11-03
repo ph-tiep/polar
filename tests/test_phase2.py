@@ -76,6 +76,30 @@ class Phase2Tests(unittest.TestCase):
                 if scope == 'frozen':
                     self.assertEqual(int(wrong[:, :128].sum()), 0)
 
+    def test_fig5_full_key_protocol_and_complement_control(self):
+        for n, k in [(128, 64), (256, 64)]:
+            with self.subTest(n=n, k=k):
+                frozen, _ = generate_5g_ranking(k, n)
+                encoder = CryptoPolarEncoder(frozen, n, 'CRC11')
+                decoder = make_decoder(frozen, n, 'CRC11', 8)
+                generator = torch.Generator().manual_seed(n+37)
+                payload = torch.randint(0, 2, (2, k-11), generator=generator).float()
+                alice_key = torch.randint(0, 2, (2, n), generator=generator).float()
+                bob_key = alice_key.clone()
+                torch.testing.assert_close(alice_key, bob_key)
+                for p in (.01, .25, .5, 1.):
+                    eve_key, count, width = mismatch_key(alice_key, k, p, 'full', generator)
+                    self.assertEqual(width, n)
+                    self.assertTrue(torch.all((eve_key != alice_key).sum(-1) == count))
+                    if p == .01:
+                        self.assertEqual(count, 1 if n == 128 else 3)
+                    if p == 1.:
+                        torch.testing.assert_close(eve_key, 1-alice_key)
+                cw = encoder(payload, alice_key)
+                complement_cw = encoder(payload, 1-alice_key)
+                self.assertTrue(torch.all((cw != complement_cw).sum(-1) == 1))
+                torch.testing.assert_close(decoder(20*(2*cw-1), 1-alice_key), payload)
+
     def test_frozen_only_inverse_control(self):
         frozen, info = generate_5g_ranking(16, 32)
         enc = CryptoPolarEncoder(frozen, 32, 'CRC6', enable_info_masking=False)

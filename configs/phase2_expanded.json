@@ -72,8 +72,7 @@
   "eve_list_size": 8,
   "eve_snr": "physical",
   "mismatch_scopes": [
-    "full",
-    "frozen"
+    "full"
   ],
   "mismatch_fractions": [
     0.01,

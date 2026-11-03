@@ -12,7 +12,7 @@ Crypto-Polar/decoder cải thiện hiệu quả. Phần system model để sau k
 | Eve lẫn vào chất lượng Bob | Tách Fig5 và nhóm đối chứng Eve | Không diễn giải chênh lệch kênh/khóa là coding gain của decoder |
 | Tx128/Rx4, nhiều N,K,R | Phase 1 nhận kích thước array; Phase 2 kiểm tra H và metadata; 12 cặp N,K mẫu | Chạy CSI mới cho mỗi mảng anten; không cắt/lặp CSI |
 | Vì sao NIST/65536 bit/8 test? | Bỏ battery NIST và hình NIST khỏi mã chạy theo yêu cầu người dùng | Xóa kết luận NIST khỏi bản báo cáo mới; không cần thay bằng số liệu giả |
-| Fig5 sai khóa 1,25,50,100% theo Eb/N0 | Lật đúng số bit sau làm tròn; hai phạm vi keystream tách riêng, Bob khóa đúng và Eve khóa đúng làm mốc | Đọc số bit và tỷ lệ thực tế; không coi 100% là khóa ngẫu nhiên |
+| Fig5 sai khóa 1,25,50,100% theo Eb/N0 | Lật đúng số bit sau làm tròn; Hình chính dùng toàn bộ K, Bob khóa đúng + Eve sai 1/25/50/100%; Eve khóa đúng và frozen-only đặt ở đối chứng riêng | Đọc số bit và tỷ lệ thực tế; không coi 100% là khóa ngẫu nhiên |
 | Fig1 mục đích và cách tính | Vẽ gain beamforming từ H, tương quan vector TX chủ đạo, kích thước thật | Mô tả đáp ứng kênh và quan hệ không gian; không suy ra độ an toàn từ tương quan |
 | 2 GHz/512 subcarrier | Ghi rõ đây là tham số mô phỏng đang dùng, chưa có cơ sở gọi là chuẩn 6G | Cần nguồn/tài liệu hoặc khảo sát bổ sung trước khi biện luận lựa chọn trong bài |
 
@@ -79,3 +79,17 @@ entropy đo được từ kênh đối ứng. Master key trong runner là fixtur
 
 Chưa chạy full Phase 1/2 cho đợt sửa này. Mọi kết quả nghiên cứu mới sẽ do người dùng
 chạy trên VS Code; kiểm thử kỹ thuật không thay thế các thí nghiệm đó.
+
+
+## Bổ sung sau rà soát hình và bài tham chiếu (03/11/2026)
+
+- Không xuất hình hiệu năng từ smoke một SNR/hai khung; có SMOKE_ONLY.txt.
+- Replot chỉ dùng số liệu gốc, nối điểm đo thật; cận zero-error nằm trong CSV,
+  không thành tam giác có thể bị đọc nhầm là BER tăng trở lại.
+- Fig5 chính có đúng năm đường, khóa K là toàn bộ N bit, tách K1/K2 bên trong.
+  Master key của SHAKE không phải đối tượng phần trăm lật trong thí nghiệm này.
+- Bài tham chiếu dùng cả cách nói “unknown” và “different”; triển khai chọn định
+  nghĩa tường minh theo comment: lật đúng round(p*N) bit, giữ các vị trí còn lại.
+  Không tự đổi p=100% thành một khóa ngẫu nhiên để thay đổi hình dạng đường.
+- Bổ sung ba ablation của decoder và lưu lỗi từng khung/so sánh ghép cặp.
+- Các số liệu đã có chỉ được vẽ lại. Thí nghiệm đầy đủ mới do người dùng chạy.
