@@ -17,7 +17,7 @@ from .security_metrics import mismatch_key, inverse_polar_payload, paired_diagno
 def validate_config(c):
     allowed = {'seed', 'threads', 'frames_per_snr', 'batch_size', 'ebno_db', 'list_sizes',
                'cases', 'crc', 'eve_list_size', 'eve_snr', 'mismatch_scopes',
-               'mismatch_fractions', 'modified', 'diagnostic_samples'}
+               'mismatch_fractions', 'modified', 'diagnostic_samples', 'decoder_ablation'}
     if set(c) - allowed:
         raise ValueError(f'Unknown config fields: {set(c) - allowed}')
     for name in ('frames_per_snr', 'batch_size', 'threads', 'diagnostic_samples'):
@@ -47,6 +47,8 @@ def validate_config(c):
         raise ValueError('Mismatch fractions must be in [0,1]')
     if not c['ebno_db'] or not np.isfinite(c['ebno_db']).all() or len(set(c['ebno_db'])) != len(c['ebno_db']):
         raise ValueError('Require unique finite SNR values')
+    if 'decoder_ablation' in c and not isinstance(c['decoder_ablation'], bool):
+        raise ValueError('decoder_ablation must be boolean')
     m = c['modified']
     if set(m) != {'enabled', 'base_list', 'max_flip_trials', 'damping', 'expand_list', 'retry_damping'}:
         raise ValueError('Invalid modified-decoder settings')
@@ -74,6 +76,29 @@ def summarize_errors(frame_errors, payload_bits):
                 bler_low95=max(0., center-half), bler_high95=min(1., center+half),
                 ber_frame_se=float(per_frame.std(ddof=1)/np.sqrt(frames)) if frames > 1 else None,
                 zero_error_upper95=upper_zero)
+
+
+def paired_summary(reference, candidate, payload_bits, snr, reference_name, candidate_name):
+    """Paired Monte Carlo differences, not an automatic equivalence claim.
+
+    Standard errors use frames as clusters. A zero SE with no observed errors
+    is not proof that true rates are zero or equivalent; record discordances.
+    """
+    a, b = np.asarray(reference), np.asarray(candidate)
+    if a.shape != b.shape or a.ndim != 1 or len(a) < 1:
+        raise ValueError('Paired errors require the same nonempty frame vector')
+    bit_delta = (b.astype(float)-a)/payload_bits
+    a_block, b_block = a > 0, b > 0
+    block_delta = b_block.astype(float)-a_block
+    return dict(ebno_db=snr, reference=reference_name, candidate=candidate_name,
+                frames=len(a), ber_delta_candidate_minus_reference=float(bit_delta.mean()),
+                ber_delta_frame_se=float(bit_delta.std(ddof=1)/np.sqrt(len(a))) if len(a)>1 else None,
+                bler_delta_candidate_minus_reference=float(block_delta.mean()),
+                bler_delta_frame_se=float(block_delta.std(ddof=1)/np.sqrt(len(a))) if len(a)>1 else None,
+                reference_only_block_errors=int(np.sum(a_block & ~b_block)),
+                candidate_only_block_errors=int(np.sum(~a_block & b_block)),
+                both_block_errors=int(np.sum(a_block & b_block)),
+                both_correct=int(np.sum(~a_block & ~b_block)))
 
 
 def carrier_indices(batch, n, carriers, generator):
@@ -111,6 +136,15 @@ def run_case(channel, c, case, out, *, render_plots=True):
     if m['enabled']:
         decoders['modified'] = make_decoder(frozen, n, c['crc'], m['base_list'], modified=m)
         descriptors['modified'] = dict(group='modified', method='modified', list_size=m['base_list'], scope='', fraction=0.)
+        if c.get('decoder_ablation', False):
+            # Isolate list expansion, scalar damping and channel-LLR flips.
+            variants = dict(
+                adaptive_list_only=dict(damping=1., retry_damping=1., expand_list=m['expand_list'], max_flip_trials=0),
+                damping_only=dict(damping=m['damping'], retry_damping=1., expand_list=False, max_flip_trials=0),
+                flip_only=dict(damping=1., retry_damping=1., expand_list=False, max_flip_trials=m['max_flip_trials']))
+            for name, settings in variants.items():
+                decoders[name] = make_decoder(frozen, n, c['crc'], m['base_list'], modified=settings)
+                descriptors[name] = dict(group='modified', method=name, list_size=m['base_list'], scope='', fraction=0.)
     eve = make_decoder(frozen, n, c['crc'], c['eve_list_size'])
     eve_standard = make_decoder(frozen, n, c['crc'], c['eve_list_size'], False)
     for scope in c['mismatch_scopes']:
@@ -119,7 +153,7 @@ def run_case(channel, c, case, out, *, render_plots=True):
             descriptors[name] = dict(group='eve', method='crypto', list_size=c['eve_list_size'], scope=scope, fraction=frac)
     descriptors['eve_standard'] = dict(group='eve_control', method='standard', list_size=c['eve_list_size'], scope='', fraction=0.)
     descriptors['frozen_only_inverse'] = dict(group='eve_control', method='frozen_only_inverse', list_size=0, scope='', fraction=0.)
-    rows = []
+    rows, paired_rows, frame_records = [], [], []
     # Construction/allocation warmup excluded from timing, including retry paths.
     dummy = torch.zeros((1, n))
     key0 = torch.zeros_like(dummy)
@@ -162,6 +196,19 @@ def run_case(channel, c, case, out, *, render_plots=True):
             recovered = inverse_polar_payload((frz_logits > 0).float(), info, payload_size)
             timing['frozen_only_inverse'] += time.perf_counter()-start
             errors['frozen_only_inverse'].extend((recovered != payload).sum(dim=-1).tolist())
+        curve_names = list(descriptors)
+        frame_records.append(np.asarray([errors[name] for name in curve_names], dtype=np.uint16))
+        for size in c['list_sizes']:
+            paired_rows.append(paired_summary(errors[f'standard_L{size}'], errors[f'crypto_L{size}'],
+                payload_size, snr, f'standard_L{size}', f'crypto_L{size}'))
+        if m['enabled']:
+            references = [f'crypto_L{m["base_list"]}']
+            if m['expand_list']:
+                references.append(f'crypto_L{min(2*m["base_list"], 32)}')
+            references.extend(name for name in ('adaptive_list_only', 'damping_only', 'flip_only') if name in errors)
+            for reference in dict.fromkeys(references):
+                paired_rows.append(paired_summary(errors[reference], errors['modified'],
+                    payload_size, snr, reference, 'modified'))
         for name, desc in descriptors.items():
             metrics = summarize_errors(errors[name], payload_size)
             width = n-k if desc['scope'] == 'frozen' else n
@@ -175,6 +222,10 @@ def run_case(channel, c, case, out, *, render_plots=True):
             rows.append(row)
         print(f'N={n} K={k} Eb/N0={snr:g}: {c["frames_per_snr"]} frames per curve', flush=True)
         write_rows(out/'metrics.csv', rows)
+        write_rows(out/'paired_metrics.csv', paired_rows)
+    np.savez_compressed(out/'frame_errors.npz', ebno_db=np.asarray(c['ebno_db']),
+                        curve_names=np.asarray(curve_names), frame_bit_errors=np.stack(frame_records),
+                        payload_bits=payload_size)
     diag = paired_diagnostics(enc, std, frz, keygen, info, c['diagnostic_samples'], c['seed'])
     (out/'diagnostics.json').write_text(json.dumps(diag, indent=2), encoding='utf-8')
     if render_plots:
@@ -208,8 +259,8 @@ def run(config, dataset, output, *, expected_tx, expected_rx, smoke=False):
                     timing_note='CPU wall time, batch-amortized; not single-frame latency',
                     hashes={})
     try:
-        manifest['git_commit'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=Path(__file__).resolve().parents[1], text=True).strip()
-        manifest['git_dirty'] = bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=Path(__file__).resolve().parents[1], text=True).strip())
+        manifest['git_commit'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=Path(__file__).resolve().parents[1], text=True, stderr=subprocess.DEVNULL).strip()
+        manifest['git_dirty'] = bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=Path(__file__).resolve().parents[1], text=True, stderr=subprocess.DEVNULL).strip())
     except (OSError, subprocess.CalledProcessError):
         manifest['git_commit'] = None
     source_root = Path(__file__).resolve().parents[1]

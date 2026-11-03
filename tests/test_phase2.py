@@ -9,7 +9,7 @@ import torch
 from fec.polar.crypto_polar import CryptoPolarEncoder, ChannelBoundKeyGenerator
 from fec.polar.decoding import PolarSCLDecoder
 from fec.polar.utils import generate_5g_ranking
-from phase2_crypto_polar.experiments import make_decoder, summarize_errors, carrier_indices, validate_config, run
+from phase2_crypto_polar.experiments import make_decoder, summarize_errors, carrier_indices, validate_config, run, paired_summary
 from phase2_crypto_polar.digital_twin_channel import DigitalTwinTHzChannel
 from phase2_crypto_polar.security_metrics import mismatch_key, inverse_polar_payload
 
@@ -122,6 +122,27 @@ class Phase2Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'expanded-list'):
             validate_config(c)
 
+    def test_paired_metrics_preserve_discordant_frames(self):
+        result = paired_summary([0, 2, 1, 0], [1, 0, 2, 0], 10, 1., 'reference', 'candidate')
+        self.assertEqual(result['reference_only_block_errors'], 1)
+        self.assertEqual(result['candidate_only_block_errors'], 1)
+        self.assertEqual(result['both_block_errors'], 1)
+        self.assertEqual(result['both_correct'], 1)
+        self.assertAlmostEqual(result['ber_delta_candidate_minus_reference'], 0.)
+        self.assertEqual(result['bler_delta_candidate_minus_reference'], 0.)
+
+    def test_list_only_ablation_has_no_flip_retries(self):
+        frozen, _ = generate_5g_ranking(16, 32)
+        settings = dict(damping=1., retry_damping=1., expand_list=True, max_flip_trials=0)
+        decoder = make_decoder(frozen, 32, 'CRC6', 2, modified=settings)
+        generator = torch.Generator().manual_seed(72)
+        logits = torch.randn(10, 32, generator=generator)
+        keys = torch.randint(0, 2, (10, 32), generator=generator).float()
+        decoder(logits, keys)
+        self.assertGreater(decoder.last_stats['expanded_frames'], 0)
+        self.assertEqual(decoder.last_stats['flip_frames'], 0)
+        self.assertEqual(decoder.last_stats['max_list_size'], 4)
+
     def test_plot_zeros_are_not_replaced_with_bounds(self):
         from phase2_crypto_polar.plotting_q1 import line, validate_plot_data
         import matplotlib.pyplot as plt
@@ -158,6 +179,13 @@ class Phase2Tests(unittest.TestCase):
                 rows = list(csv.DictReader(f))
             self.assertTrue(all(int(r['frames']) == 3 for r in rows))
             self.assertTrue(all(int(r['bits']) == 30 for r in rows))
+            self.assertTrue({'adaptive_list_only','damping_only','flip_only'} <= {r['curve'] for r in rows})
+            with np.load(root/'out/N32_K16/frame_errors.npz', allow_pickle=False) as frames:
+                self.assertEqual(frames['frame_bit_errors'].shape, (1, len(rows), 3))
+                for index, row in enumerate(rows):
+                    counts = frames['frame_bit_errors'][0, index]
+                    self.assertEqual(int(counts.sum()), int(row['bit_errors']))
+                    self.assertEqual(int(np.count_nonzero(counts)), int(row['block_errors']))
             diag = json.loads((root/'out/N32_K16/diagnostics.json').read_text())
             self.assertEqual(diag['frozen_only_noiseless_attack_bit_errors'], 0)
             self.assertFalse((root/'out/N32_K16/Fig2_Bob_BER.png').exists())

@@ -3,17 +3,48 @@
   "threads": 2,
   "frames_per_snr": 2000,
   "batch_size": 32,
-  "ebno_db": [-1, 0, 1, 2, 3, 4, 5, 6],
-  "list_sizes": [4, 8, 16],
-  "cases": [{"n": 256, "k": 128}],
+  "ebno_db": [
+    -1,
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "list_sizes": [
+    4,
+    8,
+    16
+  ],
+  "cases": [
+    {
+      "n": 256,
+      "k": 128
+    }
+  ],
   "crc": "CRC11",
   "eve_list_size": 8,
   "eve_snr": "physical",
-  "mismatch_scopes": ["full", "frozen"],
-  "mismatch_fractions": [0.01, 0.25, 0.5, 1.0],
+  "mismatch_scopes": [
+    "full",
+    "frozen"
+  ],
+  "mismatch_fractions": [
+    0.01,
+    0.25,
+    0.5,
+    1.0
+  ],
   "modified": {
-    "enabled": true, "base_list": 8, "max_flip_trials": 4,
-    "damping": 0.88, "expand_list": true, "retry_damping": 0.78
+    "enabled": true,
+    "base_list": 8,
+    "max_flip_trials": 4,
+    "damping": 0.88,
+    "expand_list": true,
+    "retry_damping": 0.78
   },
-  "diagnostic_samples": 256
+  "diagnostic_samples": 256,
+  "decoder_ablation": true
 }

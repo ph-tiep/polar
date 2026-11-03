@@ -89,5 +89,6 @@
     "expand_list": true,
     "retry_damping": 0.78
   },
-  "diagnostic_samples": 256
+  "diagnostic_samples": 256,
+  "decoder_ablation": true
 }
