@@ -91,7 +91,7 @@ def make_decoder(frozen, n, crc, size, crypto=True, modified=None):
         expand_list=m['expand_list'], retry_damping=m['retry_damping'])
 
 
-def run_case(channel, c, case, out):
+def run_case(channel, c, case, out, *, render_plots=True):
     n, k = case['n'], case['k']
     frozen, info = generate_5g_ranking(k, n)
     common = dict(frozen_pos=frozen, n=n, crc_degree=c['crc'])
@@ -177,8 +177,9 @@ def run_case(channel, c, case, out):
         write_rows(out/'metrics.csv', rows)
     diag = paired_diagnostics(enc, std, frz, keygen, info, c['diagnostic_samples'], c['seed'])
     (out/'diagnostics.json').write_text(json.dumps(diag, indent=2), encoding='utf-8')
-    from .plotting_q1 import plot_case
-    plot_case(rows, diag, out, c)
+    if render_plots:
+        from .plotting_q1 import plot_case
+        plot_case(rows, diag, out, c)
     return rows
 
 
@@ -191,6 +192,8 @@ def write_rows(path, rows):
 
 def run(config, dataset, output, *, expected_tx, expected_rx, smoke=False):
     validate_config(config)
+    if not smoke and len(config['ebno_db']) < 2:
+        raise ValueError('Experiments need at least two SNR points; use --smoke for an integration check')
     torch.set_num_threads(config['threads'])
     torch.manual_seed(config['seed'])
     torch.use_deterministic_algorithms(True)
@@ -233,13 +236,18 @@ def run(config, dataset, output, *, expected_tx, expected_rx, smoke=False):
                     raise ValueError(f'Metadata/CSI mismatch: {field}')
             manifest['phase1_metadata'] = {name: meta[name].tolist() for name in meta.files}
         manifest['channel'] = channel.get_channel_summary()
-        from .plotting_q1 import plot_channel
-        plot_channel(channel, output)
+        if not smoke:
+            from .plotting_q1 import plot_channel
+            plot_channel(channel, output)
         with torch.inference_mode():
             for case in config['cases']:
                 target = output/f'N{case["n"]}_K{case["k"]}'
                 target.mkdir()
-                run_case(channel, config, case, target)
+                run_case(channel, config, case, target, render_plots=not smoke)
+        if smoke:
+            (output/'SMOKE_ONLY.txt').write_text(
+                'TECHNICAL CHECK ONLY. No performance figures are produced.\n'
+                'Run again without --smoke in a NEW output directory for BER/BLER curves.\n', encoding='utf-8')
         manifest['status'] = 'completed'
     except BaseException as exc:
         manifest.update(status='failed', error=str(exc))

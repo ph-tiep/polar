@@ -122,6 +122,20 @@ class Phase2Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'expanded-list'):
             validate_config(c)
 
+    def test_plot_zeros_are_not_replaced_with_bounds(self):
+        from phase2_crypto_polar.plotting_q1 import line, validate_plot_data
+        import matplotlib.pyplot as plt
+        rows = [dict(ebno_db=0, ber=.1, frames=100), dict(ebno_db=1, ber=0., frames=100)]
+        fig, ax = plt.subplots()
+        line(ax, rows, 'ber', 'test')
+        values = ax.lines[0].get_ydata()
+        self.assertEqual(values[0], .1)
+        self.assertTrue(np.isnan(values[1]))
+        self.assertEqual(len(ax.collections), 0)
+        plt.close(fig)
+        with self.assertRaisesRegex(ValueError, 'at least two'):
+            validate_plot_data([dict(ebno_db=0)])
+
     def test_pipeline_fixture_partial_batch_and_outputs(self):
         c = json.loads((ROOT/'configs/phase2_review.json').read_text())
         c.update(frames_per_snr=3, batch_size=2, cases=[dict(n=32, k=16)], crc='CRC6',
@@ -146,7 +160,20 @@ class Phase2Tests(unittest.TestCase):
             self.assertTrue(all(int(r['bits']) == 30 for r in rows))
             diag = json.loads((root/'out/N32_K16/diagnostics.json').read_text())
             self.assertEqual(diag['frozen_only_noiseless_attack_bit_errors'], 0)
-            self.assertTrue((root/'out/N32_K16/Fig2_Bob_BER.png').exists())
+            self.assertFalse((root/'out/N32_K16/Fig2_Bob_BER.png').exists())
+            self.assertTrue((root/'out/SMOKE_ONLY.txt').exists())
+            from replot_phase2 import replot
+            with self.assertRaisesRegex(ValueError, 'smoke'):
+                replot(root/'out', root/'replot-smoke')
+            self.assertFalse((root/'replot-smoke').exists())
+            # Separate tiny two-SNR fixture checks the real plotting/replot path.
+            c['ebno_db'] = [0., 1.]
+            run(c, data, root/'experiment', expected_tx=1, expected_rx=1)
+            original = (root/'experiment/N32_K16/metrics.csv').read_bytes()
+            replot(root/'experiment', root/'replotted')
+            self.assertEqual(original, (root/'experiment/N32_K16/metrics.csv').read_bytes())
+            self.assertEqual(original, (root/'replotted/N32_K16/metrics.csv').read_bytes())
+            self.assertTrue((root/'replotted/N32_K16/Fig2_Bob_BER.png').exists())
 
 
 if __name__ == '__main__':

@@ -22,14 +22,18 @@ def main():
     if args.smoke:
         c.update(frames_per_snr=2, batch_size=1, ebno_db=[0.], diagnostic_samples=2)
         c['cases'] = c['cases'][:1]
+        print('SMOKE CHECK: one SNR, two frames; no performance figures. Run without --smoke for curves.')
     validate_config(c)
     if args.plan:
         print(json.dumps(dict(config=c, dataset=str(args.dataset_dir.resolve()), expected_tx=args.expected_tx, expected_rx=args.expected_rx), indent=2))
         return
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-    output = args.output_dir or ROOT/'results'/f'phase2-{stamp}'
+    kind = 'smoke' if args.smoke else 'review'
+    output = args.output_dir or ROOT/'results'/f'phase2-{kind}-{stamp}'
     run(c, args.dataset_dir, output, expected_tx=args.expected_tx, expected_rx=args.expected_rx, smoke=args.smoke)
     print(f'Completed: {output.resolve()}')
+    if args.smoke:
+        print('Next: run without --smoke and use a new output directory.')
 
 
 if __name__ == '__main__':
