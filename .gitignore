@@ -9,3 +9,5 @@ logs/
 results/
 phase1_results/
 .venv*/
+**/private/
+shared_key.bin

@@ -9,15 +9,16 @@ from pathlib import Path
 import numpy as np
 import torch
 from fec.polar.utils import generate_5g_ranking
-from fec.polar.crypto_polar import ChannelBoundKeyGenerator, CryptoPolarEncoder, ImprovedCryptoPolarSCLDecoder
+from fec.polar.crypto_polar import CryptoPolarEncoder, ImprovedCryptoPolarSCLDecoder
 from .digital_twin_channel import DigitalTwinTHzChannel
 from .security_metrics import mismatch_key, inverse_polar_payload, paired_diagnostics
+from .keys import load_run_key, SharedKeyGenerator
 
 
 def validate_config(c):
     allowed = {'seed', 'threads', 'frames_per_snr', 'batch_size', 'ebno_db', 'list_sizes',
                'cases', 'crc', 'eve_list_size', 'eve_snr', 'mismatch_scopes',
-               'mismatch_fractions', 'modified', 'diagnostic_samples', 'decoder_ablation'}
+               'mismatch_fractions', 'modified', 'diagnostic_samples', 'decoder_ablation', 'construction'}
     if set(c) - allowed:
         raise ValueError(f'Unknown config fields: {set(c) - allowed}')
     for name in ('frames_per_snr', 'batch_size', 'threads', 'diagnostic_samples'):
@@ -56,6 +57,18 @@ def validate_config(c):
         raise ValueError('Invalid modified-decoder budget')
     if m['enabled'] and m['expand_list'] and min(2*m['base_list'], 32) not in c['list_sizes']:
         raise ValueError('Include the expanded-list baseline in list_sizes')
+    if 'construction' in c:
+        settings = c['construction']
+        if set(settings) != {'methods', 'design_ebno_db', 'mapping_seed'}:
+            raise ValueError('Invalid construction settings')
+        if settings['methods'] not in (['fixed', 'dt'], ['fixed', 'dt', 'robust']):
+            raise ValueError('Construction methods must be [fixed, dt] or [fixed, dt, robust]')
+        if not np.isfinite(settings['design_ebno_db']) or not -30 <= settings['design_ebno_db'] <= 40:
+            raise ValueError('Design Eb/N0 must be finite and between -30 and 40 dB')
+        if not isinstance(settings['mapping_seed'], int) or settings['mapping_seed'] < 0:
+            raise ValueError('mapping_seed must be a nonnegative integer')
+        if m['enabled'] or c.get('decoder_ablation', False):
+            raise ValueError('Construction comparisons hold CA-SCL fixed; disable Modified and decoder_ablation')
 
 
 def summarize_errors(frame_errors, payload_bits):
@@ -116,7 +129,7 @@ def make_decoder(frozen, n, crc, size, crypto=True, modified=None):
         expand_list=m['expand_list'], retry_damping=m['retry_damping'])
 
 
-def run_case(channel, c, case, out, *, render_plots=True):
+def run_case(channel, c, case, out, *, keygen, render_plots=True):
     n, k = case['n'], case['k']
     frozen, info = generate_5g_ranking(k, n)
     common = dict(frozen_pos=frozen, n=n, crc_degree=c['crc'])
@@ -125,7 +138,6 @@ def run_case(channel, c, case, out, *, render_plots=True):
     frz = CryptoPolarEncoder(**common, enable_info_masking=False)
     payload_size = enc.k_payload
     rate = payload_size/n
-    keygen = ChannelBoundKeyGenerator(b'PUBLIC_SIMULATION_FIXTURE_NOT_A_DEPLOYMENT_SECRET', channel.H_Bob)
     decoders, descriptors = {}, {}
     for size in c['list_sizes']:
         for method, crypto in [('standard', False), ('crypto', True)]:
@@ -241,7 +253,8 @@ def write_rows(path, rows):
         writer.writerows(rows)
 
 
-def run(config, dataset, output, *, expected_tx, expected_rx, smoke=False):
+def run(config, dataset, output, *, expected_tx, expected_rx, smoke=False,
+        key_file=None, key_nonce=None, design_profile_file=None):
     validate_config(config)
     if not smoke and len(config['ebno_db']) < 2:
         raise ValueError('Experiments need at least two SNR points; use --smoke for an integration check')
@@ -255,7 +268,7 @@ def run(config, dataset, output, *, expected_tx, expected_rx, smoke=False):
                     numpy=np.__version__, platform=platform.platform(),
                     modulation='coherent BPSK frequency-domain abstraction',
                     ebno_reference='payload bit; Bob mean effective channel normalized to one',
-                    security_note='Public simulation keys; wrong derived-key bits, not master-key compromise',
+                    security_note='Assumed shared secret; wrong derived-keystream bits, not master-key compromise; BER is not a secrecy proof',
                     timing_note='CPU wall time, batch-amortized; not single-frame latency',
                     hashes={})
     try:
@@ -264,13 +277,14 @@ def run(config, dataset, output, *, expected_tx, expected_rx, smoke=False):
     except (OSError, subprocess.CalledProcessError):
         manifest['git_commit'] = None
     source_root = Path(__file__).resolve().parents[1]
-    sources = [source_root/'main_phase2_crypto_q1.py']
+    sources = [source_root/'main_phase2_crypto_q1.py', source_root/'prepare_design_profiles.py']
     for folder in ('fec', 'phase2_crypto_polar'):
         sources.extend(sorted((source_root/folder).rglob('*.py')))
     manifest['source_sha256'] = {str(p.relative_to(source_root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}
     path = output/'RUN_CONFIG.json'
     path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
     try:
+        master, nonce, manifest['key_material'] = load_run_key(output, key_file, key_nonce)
         for name in ('H_Bob.npy', 'H_Eve.npy', 'Metadata.npz'):
             manifest['hashes'][name] = hashlib.sha256((dataset/name).read_bytes()).hexdigest()
         phase1_manifest = dataset.parent.parent/'RUN_CONFIG.json'
@@ -287,6 +301,17 @@ def run(config, dataset, output, *, expected_tx, expected_rx, smoke=False):
                     raise ValueError(f'Metadata/CSI mismatch: {field}')
             manifest['phase1_metadata'] = {name: meta[name].tolist() for name in meta.files}
         manifest['channel'] = channel.get_channel_summary()
+        profiles = None
+        if 'construction' in config:
+            from .construction import design_profiles
+            nominal, scenarios, manifest['design_profile'] = design_profiles(channel, design_profile_file)
+            profiles = (nominal, scenarios)
+            if 'robust' in config['construction']['methods'] and scenarios is None:
+                raise ValueError('Robust construction requires --design-profiles with scenario_gains')
+        elif design_profile_file is not None:
+            raise ValueError('--design-profiles requires a construction config')
+        # Persist replay information before starting a long experiment.
+        path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
         if not smoke:
             from .plotting_q1 import plot_channel
             plot_channel(channel, output)
@@ -294,7 +319,12 @@ def run(config, dataset, output, *, expected_tx, expected_rx, smoke=False):
             for case in config['cases']:
                 target = output/f'N{case["n"]}_K{case["k"]}'
                 target.mkdir()
-                run_case(channel, config, case, target, render_plots=not smoke)
+                keygen = SharedKeyGenerator(master, nonce, n=case['n'], k=case['k'], crc=config['crc'])
+                if 'construction' in config:
+                    from .construction_experiments import run_construction_case
+                    run_construction_case(channel, config, case, target, keygen=keygen, profiles=profiles, render_plots=not smoke)
+                else:
+                    run_case(channel, config, case, target, keygen=keygen, render_plots=not smoke)
         if smoke:
             (output/'SMOKE_ONLY.txt').write_text(
                 'TECHNICAL CHECK ONLY. No performance figures are produced.\n'

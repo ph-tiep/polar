@@ -1,3 +1,11 @@
+# Bản bổ sung thiết kế mã theo Digital Twin — 04/11/2026
+
+Luồng chính mới nằm ở configs/phase2_dt_review.json; hướng dẫn đầy đủ trong RUN_DT_VSCODE.md. Phase 1 và cách dùng khóa cho information/frozen được giữ lại. CA-SCL cùng L và CRC được giữ cố định; đóng góp ứng viên là chọn vị trí mã bằng cận Bhattacharyya theo profile kênh, không phải decoder mới. Có đối chứng fixed/DT cho cả Standard và Crypto. Robust cần các profile tình huống tường minh. Chưa tuyên bố tính mới, coding gain hay secrecy trước khi có rà soát tài liệu và kết quả.
+
+Luồng mới dùng khóa chung giả định, sinh ngẫu nhiên trong file riêng và HMAC-SHA256 theo khung/ngữ cảnh; không dùng hằng số công khai để đại diện bí mật. Chưa triển khai trích khóa CIR. P=100% vẫn là lật toàn bộ chuỗi khóa N bit và BER vẫn đo sau giải mã. Hình có nối điểm đo, không ép dạng đường; không đưa SC/BP/NIST trở lại. System model tiếp tục để sau.
+
+Các ghi chú bên dưới mô tả đợt sửa legacy trước đó. Những câu nói master key công khai áp dụng cho phiên bản lịch sử; runner hiện đã thay bằng file riêng. Modified decoder vẫn có trong config legacy, không chạy trong phép so sánh construction chính.
+
 # Đối chiếu góp ý và thay đổi mã
 
 Tài liệu này mô tả cách kiểm chứng và giới hạn của chương trình, chưa kết luận

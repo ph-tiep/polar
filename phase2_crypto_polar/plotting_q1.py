@@ -98,6 +98,9 @@ def plot_channel(ch, out):
 
 def plot_case(rows, diag, out, c):
     validate_plot_data(rows)
+    if 'construction' in c:
+        from .plotting_construction import plot_construction_case
+        return plot_construction_case(rows, diag, out, c)
     out = Path(out)
     case = rows[0]
     title = f'N={case["n"]}, K={case["k"]}, R=K/N={case["k"]/case["n"]:g}, payload={case["payload_bits"]} ({c["crc"]})'

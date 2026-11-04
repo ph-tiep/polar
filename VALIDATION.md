@@ -1,3 +1,27 @@
+# DT construction revision — 2026-11-04
+
+24 Phase 2 checks passed on Linux/Python 3.12 CPU: the 15 legacy regression
+checks and 9 new construction/key/profile checks. No full Phase 1 or Phase 2
+research simulation was run; the user runs the experiments locally. Windows
+execution has not been independently verified.
+
+New checks cover an independent exhaustive BEC linear-constraint calculation
+of synthetic-channel reliability/order, numerical Gaussian-density overlap,
+worst-scenario selection, complete carrier cycles, noiseless decoding for all
+construction groups, key context/batching separation, same-config replay of
+every frame error, profile projection on the same transmit beam, actual key
+mismatch counts, paired records, output inversion, and byte-identical replot.
+Fixtures use N32/K16, three frames per SNR, and small artificial channels.
+They are not evidence of a performance gain. Plot layout was inspected using
+a separate tiny fixture including measured zero-error annotations.
+
+The new default uses fixed vs DT construction with the same CA-SCL/CRC/L.
+Without supplied design profiles it explicitly assumes the evaluation gain
+profile is known. Robust mode requires external scenarios and does not invent
+prediction errors. No novelty or secrecy claim is established by these tests.
+
+Historical validation follows.
+
 # Technical validation — 2026-11-02
 
 Executed on Linux, Python 3.12, CPU. No full Phase 1 or Phase 2 research experiment

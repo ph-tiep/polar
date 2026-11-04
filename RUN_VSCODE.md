@@ -1,4 +1,6 @@
-# Chạy bản sửa theo góp ý của Thầy
+# Hướng dẫn Phase 1 và các thí nghiệm legacy
+
+**Bản mới: đọc [RUN_DT_VSCODE.md](RUN_DT_VSCODE.md) để chạy thiết kế Polar theo Digital Twin.** Mặc định CLI hiện là `phase2_dt_review.json`. Các lệnh Phase 2 bên dưới được ghi rõ config legacy để tái hiện nhóm so sánh cũ; Phase 1 giữ nguyên.
 
 Chạy các lệnh dưới đây từ thư mục gốc `polar` trong terminal PowerShell của VS Code.
 Mã đã kiểm tra trên Linux/Python 3.12 CPU. Chưa kiểm chứng trực tiếp trên Windows;
@@ -57,9 +59,9 @@ Kiểm tra Fourier/MATLAB và vẽ hình CSI trực tiếp, không chạy ray tr
 ## 3. Xem kế hoạch, kiểm tra nhanh, rồi chạy Phase 2
 
 ```powershell
-.\.venv-phase2\Scripts\python.exe main_phase2_crypto_q1.py --dataset-dir results/phase1-tx256-rx16/dataset/140GHz --expected-tx 256 --expected-rx 16 --plan
-.\.venv-phase2\Scripts\python.exe main_phase2_crypto_q1.py --dataset-dir results/phase1-tx256-rx16/dataset/140GHz --expected-tx 256 --expected-rx 16 --smoke --output-dir results/phase2-smoke-256x16
-.\.venv-phase2\Scripts\python.exe main_phase2_crypto_q1.py --dataset-dir results/phase1-tx256-rx16/dataset/140GHz --expected-tx 256 --expected-rx 16 --output-dir results/phase2-review-256x16
+.\.venv-phase2\Scripts\python.exe main_phase2_crypto_q1.py --config configs/phase2_review.json --dataset-dir results/phase1-tx256-rx16/dataset/140GHz --expected-tx 256 --expected-rx 16 --plan
+.\.venv-phase2\Scripts\python.exe main_phase2_crypto_q1.py --config configs/phase2_review.json --dataset-dir results/phase1-tx256-rx16/dataset/140GHz --expected-tx 256 --expected-rx 16 --smoke --output-dir results/phase2-smoke-256x16
+.\.venv-phase2\Scripts\python.exe main_phase2_crypto_q1.py --config configs/phase2_review.json --dataset-dir results/phase1-tx256-rx16/dataset/140GHz --expected-tx 256 --expected-rx 16 --output-dir results/phase2-review-256x16
 ```
 
 `--plan` chỉ in cấu hình; `--smoke` dùng 2 khung tại 0 dB để kiểm tra nối các bước,
@@ -67,7 +69,7 @@ chỉ xuất CSV/JSON và `SMOKE_ONLY.txt`, **không xuất hình hiệu năng**
 Nếu đã có CSI từ lần chạy sửa trước, có thể chỉ đường dẫn tới bộ CSI đó, nhưng
 phải có `Metadata.npz` phù hợp. Hình cũ hoặc CIR riêng lẻ không thay thế được H.
 
-Cấu hình mặc định `configs/phase2_review.json`:
+Cấu hình legacy `configs/phase2_review.json` (chọn tường minh bằng --config):
 
 - N=256, K=128 **bao gồm CRC11**, payload=117; R_code=0.5, R_payload=117/256.
 - CA-SCL L=4,8,16 cho cả Standard và Crypto. Không có SC/BP trong thí nghiệm mới.

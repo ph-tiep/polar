@@ -1,7 +1,7 @@
 """Key-mismatch controls and paired diagnostics; no randomness-test battery."""
 import numpy as np
 import torch
-from fec.polar.crypto_polar import ChannelBoundKeyGenerator
+import copy
 from fec.polar.encoding import PolarEncoder
 
 
@@ -31,7 +31,7 @@ def inverse_polar_payload(codeword, info_pos, payload_size):
 
 
 def paired_diagnostics(encoder, standard, frozen_only, keygen, info_pos, samples, seed):
-    """One master-key-bit perturbation, holding CSI, frame ID and plaintext fixed.
+    """One master-key-bit perturbation, holding public context, frame ID and plaintext fixed.
 
     Output-bit flip probabilities are descriptive, not a security certificate.
     """
@@ -39,8 +39,8 @@ def paired_diagnostics(encoder, standard, frozen_only, keygen, info_pos, samples
     n = encoder.n
     master = keygen.master_key
     master2 = bytes([master[0] ^ 1]) + master[1:]
-    other = ChannelBoundKeyGenerator(master2)
-    other.csi_digest = keygen.csi_digest
+    other = copy.copy(keygen)
+    other.master_key = master2
     flips, weights_std, weights_cry, attack_errors = [], [], [], 0
     for frame in range(samples):
         payload = torch.randint(0, 2, (1, encoder.k_payload), generator=rng).float()
@@ -59,4 +59,4 @@ def paired_diagnostics(encoder, standard, frozen_only, keygen, info_pos, samples
                 standard_weights=weights_std, crypto_weights=weights_cry,
                 frozen_only_noiseless_attack_bit_errors=attack_errors,
                 frozen_only_noiseless_attack_bits=samples * encoder.k_payload,
-                note='Same plaintext, CSI digest and frame ID per pair; simulation keys are public fixtures.')
+                note='Same plaintext, public context and frame ID per pair; descriptive diagnostic, not a security proof.')

@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 from phase2_crypto_polar.plotting_q1 import plot_case, validate_plot_data
 
-TEXT_FIELDS = {'curve', 'group', 'method', 'scope'}
+TEXT_FIELDS = {'curve', 'group', 'method', 'scope', 'construction'}
 INT_FIELDS = {'n', 'k', 'payload_bits', 'list_size', 'frames', 'bits', 'bit_errors',
               'block_errors', 'base_frames', 'expanded_frames', 'flip_frames',
               'core_calls', 'max_list_size', 'flipped_key_bits', 'eligible_key_bits'}
@@ -59,6 +59,10 @@ def replot(run_dir, output_dir):
             target.mkdir()
             shutil.copyfile(metrics, target/'metrics.csv')
             shutil.copyfile(diag_path, target/'diagnostics.json')
+            for name in ('construction.json', 'construction_arrays.npz', 'key_mismatch_audit.csv', 'paired_metrics.csv', 'frame_errors.npz'):
+                source = metrics.parent/name
+                if source.exists():
+                    shutil.copyfile(source, target/name)
             provenance['cases'][folder] = dict(source_metrics_sha256=hashlib.sha256(metrics.read_bytes()).hexdigest())
             plot_case(rows, diag, target, manifest['config'])
             assert (target/'metrics.csv').read_bytes() == metrics.read_bytes()

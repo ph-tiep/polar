@@ -1,0 +1,61 @@
+{
+  "seed": 2026,
+  "threads": 2,
+  "frames_per_snr": 10000,
+  "batch_size": 32,
+  "ebno_db": [
+    0,
+    2,
+    4,
+    6,
+    8,
+    10,
+    12,
+    14,
+    16,
+    18
+  ],
+  "list_sizes": [
+    8
+  ],
+  "cases": [
+    {
+      "n": 128,
+      "k": 64
+    },
+    {
+      "n": 256,
+      "k": 64
+    }
+  ],
+  "crc": "CRC11",
+  "eve_list_size": 8,
+  "eve_snr": "physical",
+  "mismatch_scopes": [
+    "full"
+  ],
+  "mismatch_fractions": [
+    0.01,
+    0.25,
+    0.5,
+    1.0
+  ],
+  "modified": {
+    "enabled": false,
+    "base_list": 8,
+    "max_flip_trials": 4,
+    "damping": 0.88,
+    "expand_list": false,
+    "retry_damping": 0.78
+  },
+  "diagnostic_samples": 256,
+  "decoder_ablation": false,
+  "construction": {
+    "methods": [
+      "fixed",
+      "dt"
+    ],
+    "design_ebno_db": 2.0,
+    "mapping_seed": 2026
+  }
+}
